@@ -12,6 +12,7 @@ func main() {
 	flag.NewFlagSet("rm", flag.ExitOnError)
 
 	client, err := NewClient("localhost:9000")
+	defer client.Close()
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -38,5 +39,5 @@ func main() {
 		fmt.Println("unexpected command")
 		os.Exit(1)
 	}
-	client.Close()
+
 }
