@@ -1,7 +1,6 @@
-package core
+package main
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -144,6 +143,8 @@ func Test_Compact(t *testing.T) {
 	for i := 0; i < 100000; i++ {
 		bc.Set([]byte("key"), []byte("value"))
 	}
+	bc.Close()
+	bc = NewBitCask(tmpDir)
 	for i := 0; i < 100000; i++ {
 		v, err := bc.Get([]byte("key"))
 		if err != nil {
@@ -153,7 +154,6 @@ func Test_Compact(t *testing.T) {
 			t.Error("Fail", i)
 		}
 	}
-	fmt.Println(bc.uncompacted)
 	bc.Close()
 	os.RemoveAll(tmpDir)
 }

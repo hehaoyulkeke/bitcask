@@ -1,4 +1,4 @@
-package core
+package main
 
 import (
 	"errors"
@@ -15,9 +15,12 @@ const (
 const CompactThreshold = 1024 * 1024
 
 var (
-	ErrCrc32       = errors.New("Check sum error ")
-	ErrKeyNotFound = errors.New("Key not found ")
+	ErrCrc32              = errors.New("Check sum error ")
+	ErrKeyNotFound        = errors.New("Key not found ")
+	ErrUnexpectedResponse = errors.New("Unexpected response ")
 )
+
+const Ok = ""
 
 type CommandPos struct {
 	gen    int

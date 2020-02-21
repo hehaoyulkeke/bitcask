@@ -1,9 +1,8 @@
-package core
+package main
 
 import (
 	"bufio"
 	"encoding/binary"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"io/ioutil"
@@ -177,7 +176,6 @@ func (bc *BitCask) Remove(key []byte) error {
 }
 
 func (bc *BitCask) compact() error {
-	fmt.Println("start", bc.uncompacted)
 	compactGen := bc.gen + 1
 	bc.gen += 2
 	compactWriter, err := bc.newLogFile(compactGen)
@@ -222,7 +220,6 @@ func (bc *BitCask) compact() error {
 		}
 	}
 	bc.uncompacted = 0
-	fmt.Println("finish")
 	return nil
 }
 
