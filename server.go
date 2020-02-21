@@ -55,10 +55,10 @@ func (s *Server) handle(conn net.Conn) {
 	for {
 		err := dec.Decode(&req)
 		if err != nil {
-			if err == io.EOF {
-				return
+			if err != io.EOF {
+				log.Printf("Read error: %v", err)
 			}
-			log.Printf("Read error: %v", err)
+			return
 		}
 		log.Printf("Recv request %v", req)
 		resp := Response{}
