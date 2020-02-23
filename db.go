@@ -175,8 +175,20 @@ func (bc *BitCask) checkCompact() {
 		n := <-bc.compactCh
 		uncompacted += n
 		if uncompacted >= CompactThreshold {
+			compactGen := bc.gen + 1
+			bc.gen += 2
+			compactWriter, err := bc.newLogFile(compactGen)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			bc.writer, err = bc.newLogFile(bc.gen)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 			go func() {
-				if err := bc.compact(); err != nil {
+				if err := bc.compact(compactGen, compactWriter); err != nil {
 					fmt.Println(err)
 				}
 			}()
@@ -185,17 +197,7 @@ func (bc *BitCask) checkCompact() {
 	}
 }
 
-func (bc *BitCask) compact() error {
-	compactGen := bc.gen + 1
-	bc.gen += 2
-	compactWriter, err := bc.newLogFile(compactGen)
-	if err != nil {
-		return err
-	}
-	bc.writer, err = bc.newLogFile(bc.gen)
-	if err != nil {
-		return err
-	}
+func (bc *BitCask) compact(compactGen int, compactWriter *BitCaskWriter) error {
 	pos := 0
 	bc.index.Range(func(key, value interface{}) bool {
 		v := value.(*CommandPos)

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func Test_GetSet(t *testing.T) {
@@ -143,6 +144,7 @@ func Test_Compact(t *testing.T) {
 	for i := 0; i < 100000; i++ {
 		bc.Set([]byte("key"), []byte("value"))
 	}
+	time.Sleep(5 * time.Second)
 	bc.Close()
 	bc = NewBitCask(tmpDir)
 	for i := 0; i < 100000; i++ {
