@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"io/ioutil"
@@ -15,21 +16,21 @@ import (
 )
 
 type BitCask struct {
-	workDir     string
-	writer      *BitCaskWriter
-	readers     map[int]*BitCaskReader
-	index       map[string]CommandPos
-	gen         int
-	uncompacted int
-	rw          sync.RWMutex
+	workDir   string
+	writer    *BitCaskWriter
+	readers   map[int]*BitCaskReader
+	index     *sync.Map
+	gen       int
+	rw        sync.RWMutex
+	compactCh chan int
 }
 
 func NewBitCask(workDir string) *BitCask {
 	bc := &BitCask{}
 	_ = os.Mkdir(workDir, os.ModePerm)
 	readers := make(map[int]*BitCaskReader)
-	index := make(map[string]CommandPos)
-	var uncompacted int = 0
+	var index sync.Map
+	uncompacted := 0
 	genLs, err := sortedGenLs(workDir)
 	if err != nil {
 		panic(err)
@@ -41,7 +42,7 @@ func NewBitCask(workDir string) *BitCask {
 		gen = genLs[len(genLs)-1] + 1
 	}
 	for _, gen := range genLs {
-		offset, err := load(workDir, gen, index, readers)
+		offset, err := load(workDir, gen, &index, readers)
 		if err != nil {
 			panic(err)
 		}
@@ -56,12 +57,14 @@ func NewBitCask(workDir string) *BitCask {
 	bc.writer = writer
 	bc.readers = readers
 	bc.gen = gen
-	bc.uncompacted = uncompacted
-	bc.index = index
+	bc.index = &index
+	bc.compactCh = make(chan int)
+	go bc.checkCompact()
+	bc.compactCh <- uncompacted
 	return bc
 }
 
-func load(workDir string, gen int, index map[string]CommandPos, readers map[int]*BitCaskReader) (int, error) {
+func load(workDir string, gen int, index *sync.Map, readers map[int]*BitCaskReader) (int, error) {
 	file, err := os.Open(logPath(workDir, gen))
 	if err != nil {
 		return 0, err
@@ -93,16 +96,16 @@ func load(workDir string, gen int, index map[string]CommandPos, readers map[int]
 		newPos += offset
 		key := kv[:keySize]
 		if cmdType == RemoveType {
-			if oldPos, ok := index[string(key)]; ok {
-				delete(index, string(key))
-				uncompacted += oldPos.length
+			if oldPos, ok := index.Load(string(key)); ok {
+				index.Delete(string(key))
+				uncompacted += oldPos.(*CommandPos).length
 				uncompacted += newPos - pos
 			} else {
 				return 0, ErrKeyNotFound
 			}
 		}
-		commandPos := CommandPos{gen: gen, start: pos, length: newPos - pos}
-		index[string(key)] = commandPos
+		commandPos := &CommandPos{gen: gen, start: pos, length: newPos - pos}
+		index.Store(string(key), commandPos)
 		pos = newPos
 	}
 	readers[gen] = reader
@@ -112,8 +115,9 @@ func load(workDir string, gen int, index map[string]CommandPos, readers map[int]
 func (bc *BitCask) Get(key []byte) ([]byte, error) {
 	bc.rw.RLock()
 	defer bc.rw.RUnlock()
-	if pos, ok := bc.index[string(key)]; ok {
-		value, err := bc.readers[pos.gen].readEntry(int64(pos.start), pos.length)
+	if pos, ok := bc.index.Load(string(key)); ok {
+		p := pos.(*CommandPos)
+		value, err := bc.readers[p.gen].readEntry(int64(p.start), p.length)
 		if err != nil {
 			return nil, err
 		}
@@ -130,21 +134,16 @@ func (bc *BitCask) Set(key, value []byte) error {
 	if err != nil {
 		return err
 	}
-	newPos := CommandPos{bc.gen, int(start), length}
+	newPos := &CommandPos{bc.gen, int(start), length}
 	err = bc.writer.Flush()
 	if err != nil {
 		return err
 	}
-	if oldPos, ok := bc.index[string(key)]; ok {
-		bc.uncompacted += oldPos.length
-		bc.index[string(key)] = newPos
-		if bc.uncompacted >= CompactThreshold {
-			if err := bc.compact(); err != nil {
-				return err
-			}
-		}
+	if oldPos, ok := bc.index.Load(string(key)); ok {
+		bc.index.Store(string(key), newPos)
+		bc.compactCh <- oldPos.(*CommandPos).length
 	} else {
-		bc.index[string(key)] = newPos
+		bc.index.Store(string(key), newPos)
 	}
 	return nil
 }
@@ -152,7 +151,7 @@ func (bc *BitCask) Set(key, value []byte) error {
 func (bc *BitCask) Remove(key []byte) error {
 	bc.rw.Lock()
 	defer bc.rw.Unlock()
-	if oldPos, ok := bc.index[string(key)]; ok {
+	if oldPos, ok := bc.index.Load(string(key)); ok {
 		_, length, err := bc.writer.writeEntry(key, []byte{}, RemoveType)
 		if err != nil {
 			return err
@@ -161,17 +160,28 @@ func (bc *BitCask) Remove(key []byte) error {
 		if err != nil {
 			return err
 		}
-		delete(bc.index, string(key))
-		bc.uncompacted += length
-		bc.uncompacted += oldPos.length
-		if bc.uncompacted >= CompactThreshold {
-			if err := bc.compact(); err != nil {
-				return err
-			}
-		}
+		bc.index.Delete(string(key))
+		bc.compactCh <- length
+		bc.compactCh <- oldPos.(*CommandPos).length
 		return nil
 	} else {
 		return ErrKeyNotFound
+	}
+}
+
+func (bc *BitCask) checkCompact() {
+	uncompacted := 0
+	for {
+		n := <-bc.compactCh
+		uncompacted += n
+		if uncompacted >= CompactThreshold {
+			go func() {
+				if err := bc.compact(); err != nil {
+					fmt.Println(err)
+				}
+			}()
+			uncompacted = 0
+		}
 	}
 }
 
@@ -187,23 +197,25 @@ func (bc *BitCask) compact() error {
 		return err
 	}
 	pos := 0
-	for k, v := range bc.index {
+	bc.index.Range(func(key, value interface{}) bool {
+		v := value.(*CommandPos)
 		reader := bc.readers[v.gen]
 		buf := make([]byte, v.length)
 		_, err := reader.file.ReadAt(buf, int64(v.start))
 		if err != nil {
-			return err
+			return false
 		}
 		if _, err = compactWriter.Write(buf); err != nil {
-			return err
+			return false
 		}
 		cmdPos := CommandPos{compactGen, pos, v.length}
-		bc.index[k] = cmdPos
+		*v = cmdPos
+		if err := compactWriter.Flush(); err != nil {
+			return false
+		}
 		pos += v.length
-	}
-	if err := compactWriter.Flush(); err != nil {
-		return err
-	}
+		return true
+	})
 	genLs, err := sortedGenLs(bc.workDir)
 	if err != nil {
 		return err
@@ -219,7 +231,6 @@ func (bc *BitCask) compact() error {
 			delete(bc.readers, gen)
 		}
 	}
-	bc.uncompacted = 0
 	return nil
 }
 
